@@ -59,7 +59,7 @@ HANDLE OpenSerialPort(const char* device, COMMTIMEOUTS* pTimeouts, DCB* pState)
 	// Use usual state, if no information is passed (9600, 8n1)
 	DCB defaultState = { 0 };
 	defaultState.DCBlength = sizeof(DCB);
-	defaultState.BaudRate = 115200;
+	defaultState.BaudRate = 9600;
 	defaultState.ByteSize = 8;
 	defaultState.Parity = NOPARITY;
 	defaultState.StopBits = ONESTOPBIT;
@@ -188,6 +188,52 @@ void RequestNewDevice(char* deviceName, size_t nameSizeMax)
 	}
 }
 
+DWORD WINAPI PortReadingLoopThread(LPVOID threadParameters)
+{
+	HANDLE port = *(HANDLE *)threadParameters;
+
+	assert(port != NULL);
+
+	while (1) {
+		DWORD dwWaitCommMask = 0;
+		if (WaitCommEvent(port, &dwWaitCommMask, NULL) == FALSE) {
+			printf("Error during waiting for the RX event. Port closing\n");
+			break;
+		}
+
+		uint8_t rxBuffer[1024] = { 0 };
+		size_t rxMessageLength = 0;
+		SSIZE_T neededBytesToRead = 0;
+		while (1) {
+			do {
+				uint8_t rxChar;
+				neededBytesToRead = ReadPort(port, &rxChar, sizeof(rxChar));
+				rxBuffer[rxMessageLength] = rxChar;
+				rxMessageLength++;
+			} while (neededBytesToRead > 0 && rxMessageLength < sizeof(rxBuffer));
+
+			if (neededBytesToRead == -1) break;
+
+			// TODO: Add time stamp of message loging
+
+			for (size_t rxByteCount = 0; rxByteCount < rxMessageLength; rxByteCount++) {
+				printf("%c", rxBuffer[rxByteCount]);
+			}
+
+			if (neededBytesToRead > 0) {
+				// Safety for checking overflow
+				rxMessageLength = 0;
+				memset(rxBuffer, 0, sizeof(rxBuffer));
+				continue;
+			}
+
+
+			// TODO: Add sequence to close port by command or key
+			break;
+		}
+	}
+}
+
 int main(void)
 {
 	ULONG availablePortsNum;
@@ -216,35 +262,16 @@ int main(void)
 
 		printf("Device opened. Start reading COM port:\n\n");
 
-		while (1) {
-			DWORD dwWaitCommMask = 0;
-			if (WaitCommEvent(port, &dwWaitCommMask, NULL) == FALSE) {
-				printf("Error during waiting for the RX event. Port closing\n");
-				Sleep(2000);
-				break;
-			}
-			
-			uint8_t rxBuffer[1024] = { 0 };
-			size_t rxMessageLength = 0;
-			SSIZE_T neededBytesToRead = 0;
-			do {
-				uint8_t rxChar;
-				neededBytesToRead = ReadPort(port, &rxChar, sizeof(rxChar));
-				rxBuffer[rxMessageLength] = rxChar;
-				rxMessageLength++;
-			} while (neededBytesToRead > 0);
+		HANDLE portReadingThread = CreateThread(NULL, 0, PortReadingLoopThread, &port, 0, NULL);
+		assert(portReadingThread != NULL);
 
-			if (neededBytesToRead == -1) continue;
-		
-			// TODO: Add time stamp of message loging
+#pragma warning(push)
+#pragma warning(disable: 6001)
+		WaitForSingleObject(portReadingThread, INFINITE);
+#pragma warning(pop)
 
-			for (size_t rxByteCount = 0; rxByteCount < rxMessageLength; rxByteCount++) {
-				printf("%c", rxBuffer[rxByteCount]);
-			}
-
-			// TODO: Add sequence to close port by command or key
-		}
-
+		Sleep(2000);
+		CloseHandle(portReadingThread);
 		CloseHandle(port);
 		system("cls");
 	}
