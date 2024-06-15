@@ -1,6 +1,5 @@
 #include <stdio.h>
 #include <stdint.h>
-#include <stdbool.h>
 #include <string.h>
 #include <assert.h>
 #include <windows.h>
@@ -60,7 +59,7 @@ HANDLE OpenSerialPort(const char* device, COMMTIMEOUTS* pTimeouts, DCB* pState)
 	// Use usual state, if no information is passed (9600, 8n1)
 	DCB defaultState = { 0 };
 	defaultState.DCBlength = sizeof(DCB);
-	defaultState.BaudRate = 9600;
+	defaultState.BaudRate = 115200;
 	defaultState.ByteSize = 8;
 	defaultState.Parity = NOPARITY;
 	defaultState.StopBits = ONESTOPBIT;
@@ -156,6 +155,13 @@ void PrintPorts(ULONG* availablePorts, ULONG availablePortsNum)
 
 void RequestNewDevice(char* deviceName, size_t nameSizeMax) 
 {
+
+	// TODO: Accept only available ports, dismiss other choices
+
+	// TODO: Make ports select by keys instead of typying it's name
+
+	// TODO: Update available devices during request in case of removing device
+
 	while (1) {
 
 		char InputBuffer[256] = "\\\\.\\";
@@ -195,13 +201,49 @@ int main(void)
 		RequestNewDevice(deviceName, sizeof(deviceName));
 		HANDLE port = OpenSerialPort(deviceName, NULL, NULL);
 		if (port == INVALID_HANDLE_VALUE) {
-			Sleep(1500);
+			Sleep(2000);
 			system("cls");
 			continue;
 		}
+
+		if (SetCommMask(port, EV_RXCHAR) == FALSE) {
+			printf("Error during port reciving event configuration. Port closing\n");
+			Sleep(2000);
+			CloseHandle(port);
+			system("cls");
+			continue;
+		}
+
 		printf("Device opened. Start reading COM port:\n\n");
 
+		while (1) {
+			DWORD dwWaitCommMask = 0;
+			if (WaitCommEvent(port, &dwWaitCommMask, NULL) == FALSE) {
+				printf("Error during waiting for the RX event. Port closing\n");
+				Sleep(2000);
+				break;
+			}
+			
+			uint8_t rxBuffer[1024] = { 0 };
+			size_t rxMessageLength = 0;
+			SSIZE_T neededBytesToRead = 0;
+			do {
+				uint8_t rxChar;
+				neededBytesToRead = ReadPort(port, &rxChar, sizeof(rxChar));
+				rxBuffer[rxMessageLength] = rxChar;
+				rxMessageLength++;
+			} while (neededBytesToRead > 0);
 
+			if (neededBytesToRead == -1) continue;
+		
+			// TODO: Add time stamp of message loging
+
+			for (size_t rxByteCount = 0; rxByteCount < rxMessageLength; rxByteCount++) {
+				printf("%c", rxBuffer[rxByteCount]);
+			}
+
+			// TODO: Add sequence to close port by command or key
+		}
 
 		CloseHandle(port);
 		system("cls");
