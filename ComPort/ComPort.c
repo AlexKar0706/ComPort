@@ -42,9 +42,9 @@ HANDLE OpenSerialPort(const char* device, COMMTIMEOUTS* pTimeouts, DCB* pState)
 	// Configure read and write operations to time out after 100 ms.
 	COMMTIMEOUTS defaultTimeouts = { 0 };
 	defaultTimeouts.ReadIntervalTimeout = 0;
-	defaultTimeouts.ReadTotalTimeoutConstant = 100;
+	defaultTimeouts.ReadTotalTimeoutConstant = 50;
 	defaultTimeouts.ReadTotalTimeoutMultiplier = 0;
-	defaultTimeouts.WriteTotalTimeoutConstant = 100;
+	defaultTimeouts.WriteTotalTimeoutConstant = 50;
 	defaultTimeouts.WriteTotalTimeoutMultiplier = 0;
 	if (pTimeouts == NULL) pTimeouts = &defaultTimeouts;
 
@@ -195,42 +195,70 @@ DWORD WINAPI PortReadingLoopThread(LPVOID threadParameters)
 	assert(port != NULL);
 
 	while (1) {
-		DWORD dwWaitCommMask = 0;
-		if (WaitCommEvent(port, &dwWaitCommMask, NULL) == FALSE) {
-			printf("Error during waiting for the RX event. Port closing\n");
-			break;
-		}
 
 		uint8_t rxBuffer[1024] = { 0 };
 		size_t rxMessageLength = 0;
 		SSIZE_T neededBytesToRead = 0;
-		while (1) {
-			do {
-				uint8_t rxChar;
-				neededBytesToRead = ReadPort(port, &rxChar, sizeof(rxChar));
-				rxBuffer[rxMessageLength] = rxChar;
-				rxMessageLength++;
-			} while (neededBytesToRead > 0 && rxMessageLength < sizeof(rxBuffer));
 
-			if (neededBytesToRead == -1) break;
+		do {
+			uint8_t rxChar;
+			neededBytesToRead = ReadPort(port, &rxChar, sizeof(rxChar));
 
-			// TODO: Add time stamp of message loging
+			// Check for timeout
+			if (rxMessageLength == 0 && neededBytesToRead == 0) continue;
 
-			for (size_t rxByteCount = 0; rxByteCount < rxMessageLength; rxByteCount++) {
-				printf("%c", rxBuffer[rxByteCount]);
-			}
+			rxBuffer[rxMessageLength] = rxChar;
+			rxMessageLength++;
+		} while (neededBytesToRead > 0 && rxMessageLength < sizeof(rxBuffer));
 
-			if (neededBytesToRead > 0) {
-				// Safety for checking overflow
-				rxMessageLength = 0;
-				memset(rxBuffer, 0, sizeof(rxBuffer));
-				continue;
-			}
-
-
-			// TODO: Add sequence to close port by command or key
+		// Check for the error
+		if (neededBytesToRead == -1) {
+			printf("Port closing\n");
 			break;
 		}
+
+		// TODO: Add time stamp of message loging
+
+		for (size_t rxByteCount = 0; rxByteCount < rxMessageLength; rxByteCount++) {
+			printf("%c", rxBuffer[rxByteCount]);
+		}
+
+		// Safety for checking overflow
+		if (neededBytesToRead > 0) continue;
+
+
+		// TODO: Add sequence to close port by command or key
+	}
+}
+
+DWORD WINAPI PortWrittingLoopThread(LPVOID threadParameters)
+{
+	HANDLE port = *(HANDLE*)threadParameters;
+
+	assert(port != NULL);
+
+	while (1) {
+
+		// TODO: Decide, what to do with buffer size
+		// TODO: Thread should be terminated at any time, if read thread detect problem
+
+		uint8_t txBuffer[1024] = { 0 };
+
+		if (fgets(&txBuffer[0], sizeof(txBuffer), stdin) == NULL) continue;
+
+		size_t txMessageLength = strlen(txBuffer);
+		assert(txMessageLength <= sizeof(txBuffer));
+
+		// TODO: Add time stamp of message loging
+		// TODO: Add support for the different message formats (CR, LF, CRLF)
+
+		if (WritePort(port, &txBuffer[0], txMessageLength) != 0) {
+			printf("Port closing\n");
+			break;
+		}
+
+		// TODO: Add sequence to close port by command or key
+		continue;
 	}
 }
 
@@ -252,28 +280,24 @@ int main(void)
 			continue;
 		}
 
-		if (SetCommMask(port, EV_RXCHAR) == FALSE) {
-			printf("Error during port reciving event configuration. Port closing\n");
-			Sleep(2000);
-			CloseHandle(port);
-			system("cls");
-			continue;
-		}
-
 		printf("Device opened. Start reading COM port:\n\n");
 
-		HANDLE portReadingThread = CreateThread(NULL, 0, PortReadingLoopThread, &port, 0, NULL);
-		assert(portReadingThread != NULL);
+		HANDLE portThreads[2] = { 0 };
 
-#pragma warning(push)
-#pragma warning(disable: 6001)
-		WaitForSingleObject(portReadingThread, INFINITE);
-#pragma warning(pop)
+		portThreads[0] = CreateThread(NULL, 0, PortWrittingLoopThread, &port, 0, NULL);
+		assert(portThreads[0] != NULL);
+
+		portThreads[1] = CreateThread(NULL, 0, PortReadingLoopThread, &port, 0, NULL);
+		assert(portThreads[1] != NULL);
+
+		WaitForMultipleObjects(sizeof(portThreads) / sizeof(portThreads[0]), portThreads, FALSE, INFINITE);
 
 		Sleep(2000);
-		CloseHandle(portReadingThread);
+		CloseHandle(portThreads[0]);
+		CloseHandle(portThreads[1]);
 		CloseHandle(port);
 		system("cls");
 	}
+
 	return 0;
 }
