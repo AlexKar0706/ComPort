@@ -6,6 +6,12 @@
 
 #pragma comment (lib, "OneCore.lib")
 
+typedef struct {
+	HANDLE portHandler;
+	BOOL txThreadRunning;
+	BOOL rxThreadRunning;
+} PortThreadParameters_t;
+
 void PrintError(const char* context)
 {
 	DWORD error_code = GetLastError();
@@ -190,9 +196,9 @@ void RequestNewDevice(char* deviceName, size_t nameSizeMax)
 
 DWORD WINAPI PortReadingLoopThread(LPVOID threadParameters)
 {
-	HANDLE port = *(HANDLE *)threadParameters;
+	PortThreadParameters_t* pPortParameters = (PortThreadParameters_t*)threadParameters;
 
-	assert(port != NULL);
+	assert(pPortParameters != NULL);
 
 	while (1) {
 
@@ -202,7 +208,7 @@ DWORD WINAPI PortReadingLoopThread(LPVOID threadParameters)
 
 		do {
 			uint8_t rxChar;
-			neededBytesToRead = ReadPort(port, &rxChar, sizeof(rxChar));
+			neededBytesToRead = ReadPort(pPortParameters->portHandler, &rxChar, sizeof(rxChar));
 
 			// Check for timeout
 			if (rxMessageLength == 0 && neededBytesToRead == 0) continue;
@@ -229,22 +235,28 @@ DWORD WINAPI PortReadingLoopThread(LPVOID threadParameters)
 
 		// TODO: Add sequence to close port by command or key
 	}
+
+	pPortParameters->rxThreadRunning = FALSE;
+
+	return 0;
 }
 
 DWORD WINAPI PortWrittingLoopThread(LPVOID threadParameters)
 {
-	HANDLE port = *(HANDLE*)threadParameters;
+	PortThreadParameters_t* pPortParameters = (PortThreadParameters_t*)threadParameters;
 
-	assert(port != NULL);
+	assert(pPortParameters != NULL);
 
 	while (1) {
 
 		// TODO: Decide, what to do with buffer size
-		// TODO: Thread should be terminated at any time, if read thread detect problem
+		// TODO: Thread should be terminated at any time, if read thread detect problem. Currently it is blocked by fgets
 
 		uint8_t txBuffer[1024] = { 0 };
 
 		if (fgets(&txBuffer[0], sizeof(txBuffer), stdin) == NULL) continue;
+
+		if (!pPortParameters->rxThreadRunning) break;
 
 		size_t txMessageLength = strlen(txBuffer);
 		assert(txMessageLength <= sizeof(txBuffer));
@@ -252,7 +264,7 @@ DWORD WINAPI PortWrittingLoopThread(LPVOID threadParameters)
 		// TODO: Add time stamp of message loging
 		// TODO: Add support for the different message formats (CR, LF, CRLF)
 
-		if (WritePort(port, &txBuffer[0], txMessageLength) != 0) {
+		if (WritePort(pPortParameters->portHandler, &txBuffer[0], txMessageLength) != 0) {
 			printf("Port closing\n");
 			break;
 		}
@@ -260,6 +272,10 @@ DWORD WINAPI PortWrittingLoopThread(LPVOID threadParameters)
 		// TODO: Add sequence to close port by command or key
 		continue;
 	}
+
+	pPortParameters->txThreadRunning = FALSE;
+
+	return 0;
 }
 
 int main(void)
@@ -283,14 +299,17 @@ int main(void)
 		printf("Device opened. Start reading COM port:\n\n");
 
 		HANDLE portThreads[2] = { 0 };
+		PortThreadParameters_t portParameter = { 0 };
+		portParameter.portHandler = port;
+		portParameter.rxThreadRunning = portParameter.txThreadRunning = TRUE;
 
-		portThreads[0] = CreateThread(NULL, 0, PortWrittingLoopThread, &port, 0, NULL);
+		portThreads[0] = CreateThread(NULL, 0, PortWrittingLoopThread, &portParameter, 0, NULL);
 		assert(portThreads[0] != NULL);
 
-		portThreads[1] = CreateThread(NULL, 0, PortReadingLoopThread, &port, 0, NULL);
+		portThreads[1] = CreateThread(NULL, 0, PortReadingLoopThread, &portParameter, 0, NULL);
 		assert(portThreads[1] != NULL);
 
-		WaitForMultipleObjects(sizeof(portThreads) / sizeof(portThreads[0]), portThreads, FALSE, INFINITE);
+		WaitForMultipleObjects(sizeof(portThreads) / sizeof(portThreads[0]), portThreads, TRUE, INFINITE);
 
 		Sleep(2000);
 		CloseHandle(portThreads[0]);
