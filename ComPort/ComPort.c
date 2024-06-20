@@ -8,6 +8,7 @@
 
 typedef struct {
 	HANDLE portHandler;
+	HANDLE terminalWriteMutex;
 	BOOL txThreadRunning;
 	BOOL rxThreadRunning;
 } PortThreadParameters_t;
@@ -211,6 +212,7 @@ DWORD WINAPI PortReadingLoopThread(LPVOID threadParameters)
 			neededBytesToRead = ReadPort(pPortParameters->portHandler, &rxChar, sizeof(rxChar));
 
 			// Check for timeout
+			// TODO: Fix bug with constant RX printing
 			if (rxMessageLength == 0 && neededBytesToRead == 0) continue;
 
 			rxBuffer[rxMessageLength] = rxChar;
@@ -225,9 +227,14 @@ DWORD WINAPI PortReadingLoopThread(LPVOID threadParameters)
 
 		// TODO: Add time stamp of message loging
 
+		WaitForSingleObject(pPortParameters->terminalWriteMutex, INFINITE);
+
+		printf("[RX] ");
 		for (size_t rxByteCount = 0; rxByteCount < rxMessageLength; rxByteCount++) {
 			printf("%c", rxBuffer[rxByteCount]);
 		}
+
+		if (!ReleaseMutex(pPortParameters->terminalWriteMutex)) break;
 
 		// Safety for checking overflow
 		if (neededBytesToRead > 0) continue;
@@ -237,6 +244,7 @@ DWORD WINAPI PortReadingLoopThread(LPVOID threadParameters)
 	}
 
 	pPortParameters->rxThreadRunning = FALSE;
+	ReleaseMutex(pPortParameters->terminalWriteMutex);
 
 	return 0;
 }
@@ -264,16 +272,23 @@ DWORD WINAPI PortWrittingLoopThread(LPVOID threadParameters)
 		// TODO: Add time stamp of message loging
 		// TODO: Add support for the different message formats (CR, LF, CRLF)
 
+		WaitForSingleObject(pPortParameters->terminalWriteMutex, INFINITE);
+
+		printf("[TX] ");
+		for (size_t i = 0; i < txMessageLength; i++) printf("%c", txBuffer[i]);
 		if (WritePort(pPortParameters->portHandler, &txBuffer[0], txMessageLength) != 0) {
 			printf("Port closing\n");
 			break;
 		}
+
+		if (!ReleaseMutex(pPortParameters->terminalWriteMutex)) break;
 
 		// TODO: Add sequence to close port by command or key
 		continue;
 	}
 
 	pPortParameters->txThreadRunning = FALSE;
+	ReleaseMutex(pPortParameters->terminalWriteMutex);
 
 	return 0;
 }
@@ -299,8 +314,14 @@ int main(void)
 		printf("Device opened. Start reading COM port:\n\n");
 
 		HANDLE portThreads[2] = { 0 };
+		HANDLE threadTerminalWriteMutex = NULL;
 		PortThreadParameters_t portParameter = { 0 };
+
+		threadTerminalWriteMutex = CreateMutex(NULL, FALSE, NULL);
+		assert(threadTerminalWriteMutex != NULL);
+
 		portParameter.portHandler = port;
+		portParameter.terminalWriteMutex = threadTerminalWriteMutex;
 		portParameter.rxThreadRunning = portParameter.txThreadRunning = TRUE;
 
 		portThreads[0] = CreateThread(NULL, 0, PortWrittingLoopThread, &portParameter, 0, NULL);
@@ -315,6 +336,7 @@ int main(void)
 		CloseHandle(portThreads[0]);
 		CloseHandle(portThreads[1]);
 		CloseHandle(port);
+		CloseHandle(threadTerminalWriteMutex);
 		system("cls");
 	}
 
