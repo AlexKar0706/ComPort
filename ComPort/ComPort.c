@@ -212,12 +212,11 @@ DWORD WINAPI PortReadingLoopThread(LPVOID threadParameters)
 			neededBytesToRead = ReadPort(pPortParameters->portHandler, &rxChar, sizeof(rxChar));
 
 			// Check for timeout
-			// TODO: Fix bug with constant RX printing
 			if (rxMessageLength == 0 && neededBytesToRead == 0) continue;
 
 			rxBuffer[rxMessageLength] = rxChar;
 			rxMessageLength++;
-		} while (neededBytesToRead > 0 && rxMessageLength < sizeof(rxBuffer));
+		} while ((neededBytesToRead > 0 && rxMessageLength < sizeof(rxBuffer)) || (rxMessageLength == 0 && neededBytesToRead == 0));
 
 		// Check for the error
 		if (neededBytesToRead == -1) {
