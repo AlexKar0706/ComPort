@@ -18,9 +18,17 @@
     <ClCompile Include="ComPort.c">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="Communication.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <None Include="..\.gitignore" />
     <None Include="..\README.md" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Communication.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>
