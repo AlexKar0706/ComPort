@@ -52,7 +52,7 @@ HANDLE OpenSerialPort(const char* device, COMMTIMEOUTS* pTimeouts, DCB* pState)
 		return INVALID_HANDLE_VALUE;
 	}
 
-	// Configure read and write operations to time out after 100 ms.
+	// Configure read and write operations to time out after 50 ms.
 	COMMTIMEOUTS defaultTimeouts = { 0 };
 	defaultTimeouts.ReadIntervalTimeout = 0;
 	defaultTimeouts.ReadTotalTimeoutConstant = 50;
@@ -225,12 +225,19 @@ DWORD WINAPI PortReadingLoopThread(LPVOID threadParameters)
 			uint8_t rxChar;
 			neededBytesToRead = ReadPort(pPortParameters->portHandler, &rxChar, sizeof(rxChar));
 
+
+			// Check, if COM port is requested to be closed
+			if (pPortParameters->txThreadRunning == FALSE) break;
+			
 			// Check for timeout
 			if (rxMessageLength == 0 && neededBytesToRead == 0) continue;
 
 			rxBuffer[rxMessageLength] = rxChar;
 			rxMessageLength++;
 		} while ((neededBytesToRead > 0 && rxMessageLength < sizeof(rxBuffer)) || (rxMessageLength == 0 && neededBytesToRead == 0));
+
+		// Finish thread execution, if it is requested from other thread
+		if (pPortParameters->txThreadRunning == FALSE) break;
 
 		// Check for the error
 		if (neededBytesToRead == -1) {
@@ -251,9 +258,6 @@ DWORD WINAPI PortReadingLoopThread(LPVOID threadParameters)
 
 		// Safety for checking overflow
 		if (neededBytesToRead > 0) continue;
-
-
-		// TODO: Add sequence to close port by command or key
 	}
 
 	pPortParameters->rxThreadRunning = FALSE;
@@ -282,6 +286,11 @@ DWORD WINAPI PortWrittingLoopThread(LPVOID threadParameters)
 		size_t txMessageLength = strlen(txBuffer);
 		assert(txMessageLength <= sizeof(txBuffer));
 
+		// Check for the command to close COM port communication
+		if (strncmp(&txBuffer[0], "-close", 6) == 0) {
+			printf("Port closing\n");
+			break;
+		}
 
 		// TODO: Add support for the different message formats (CR, LF, CRLF)
 
@@ -297,7 +306,6 @@ DWORD WINAPI PortWrittingLoopThread(LPVOID threadParameters)
 
 		if (!ReleaseMutex(pPortParameters->terminalWriteMutex)) break;
 
-		// TODO: Add sequence to close port by command or key
 		continue;
 	}
 
@@ -325,7 +333,7 @@ int main(void)
 			continue;
 		}
 
-		printf("Device opened. Start reading COM port:\n\n");
+		printf("Device opened. Start communication with COM port:\n\n");
 
 		HANDLE portThreads[2] = { 0 };
 		HANDLE threadTerminalWriteMutex = NULL;
