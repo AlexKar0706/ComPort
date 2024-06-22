@@ -1,3 +1,4 @@
+#include <time.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
@@ -7,8 +8,13 @@
 #pragma comment (lib, "OneCore.lib")
 
 typedef struct {
+	BOOL showTimeStamp;
+} PortSettings_t;
+
+typedef struct {
 	HANDLE portHandler;
 	HANDLE terminalWriteMutex;
+	PortSettings_t settings;
 	BOOL txThreadRunning;
 	BOOL rxThreadRunning;
 } PortThreadParameters_t;
@@ -87,7 +93,7 @@ HANDLE OpenSerialPort(const char* device, COMMTIMEOUTS* pTimeouts, DCB* pState)
 int WritePort(HANDLE port, uint8_t* buffer, size_t size)
 {
 	DWORD written;
-	BOOL success = WriteFile(port, buffer, size, &written, NULL);
+	BOOL success = WriteFile(port, buffer, (DWORD)size, &written, NULL);
 	if (!success)
 	{
 		PrintError("Failed to write to port");
@@ -109,7 +115,7 @@ int WritePort(HANDLE port, uint8_t* buffer, size_t size)
 SSIZE_T ReadPort(HANDLE port, uint8_t* buffer, size_t size)
 {
 	DWORD received;
-	BOOL success = ReadFile(port, buffer, size, &received, NULL);
+	BOOL success = ReadFile(port, buffer, (DWORD)size, &received, NULL);
 	if (!success)
 	{
 		PrintError("Failed to read from port");
@@ -195,6 +201,14 @@ void RequestNewDevice(char* deviceName, size_t nameSizeMax)
 	}
 }
 
+static void PrintTimestamp(void)
+{
+	SYSTEMTIME time = { 0 };
+	GetLocalTime(&time);
+
+	printf("[%02d:%02d:%02d.%03d]", time.wHour, time.wMinute, time.wSecond, time.wMilliseconds);
+}
+
 DWORD WINAPI PortReadingLoopThread(LPVOID threadParameters)
 {
 	PortThreadParameters_t* pPortParameters = (PortThreadParameters_t*)threadParameters;
@@ -224,10 +238,10 @@ DWORD WINAPI PortReadingLoopThread(LPVOID threadParameters)
 			break;
 		}
 
-		// TODO: Add time stamp of message loging
 
 		WaitForSingleObject(pPortParameters->terminalWriteMutex, INFINITE);
 
+		if (pPortParameters->settings.showTimeStamp) PrintTimestamp();
 		printf("[RX] ");
 		for (size_t rxByteCount = 0; rxByteCount < rxMessageLength; rxByteCount++) {
 			printf("%c", rxBuffer[rxByteCount]);
@@ -268,11 +282,12 @@ DWORD WINAPI PortWrittingLoopThread(LPVOID threadParameters)
 		size_t txMessageLength = strlen(txBuffer);
 		assert(txMessageLength <= sizeof(txBuffer));
 
-		// TODO: Add time stamp of message loging
+
 		// TODO: Add support for the different message formats (CR, LF, CRLF)
 
 		WaitForSingleObject(pPortParameters->terminalWriteMutex, INFINITE);
 
+		if (pPortParameters->settings.showTimeStamp) PrintTimestamp();
 		printf("[TX] ");
 		for (size_t i = 0; i < txMessageLength; i++) printf("%c", txBuffer[i]);
 		if (WritePort(pPortParameters->portHandler, &txBuffer[0], txMessageLength) != 0) {
@@ -322,6 +337,7 @@ int main(void)
 		portParameter.portHandler = port;
 		portParameter.terminalWriteMutex = threadTerminalWriteMutex;
 		portParameter.rxThreadRunning = portParameter.txThreadRunning = TRUE;
+		portParameter.settings.showTimeStamp = TRUE;
 
 		portThreads[0] = CreateThread(NULL, 0, PortWrittingLoopThread, &portParameter, 0, NULL);
 		assert(portThreads[0] != NULL);
