@@ -81,6 +81,18 @@ void RequestNewDevice(char* deviceName, size_t nameSizeMax)
 	}
 }
 
+static BOOL GetTxBufferHandler(uint8_t* pTxBuffer, size_t txBufferSize) 
+{
+	// TODO: Thread should be terminated at any time, if read thread detect problem. Currently it is blocked by fgets
+
+	fgets(&pTxBuffer[0], txBufferSize, stdin);
+
+	// Check for the command to close COM port communication
+	if (strncmp(&pTxBuffer[0], "-close", 6) == 0) return GET_TX_BUFFER_TERMINATE;
+
+	return GET_TX_BUFFER_TRANSMIT;
+}
+
 static void PrintMessage(Message_t* pMessage) 
 {
 	for (size_t i = 0; i < pMessage->length; i++) printf("%c", pMessage->buffer[i]);
@@ -108,7 +120,10 @@ void RunCommandLineCommunication(void)
 
 		printf("Device opened. Start communication with COM port:\n\n");
 
-		StartCommunication(port, 1);
+		PortSettings_t portSettings = { 0 };
+		portSettings.showTimeStamp = TRUE;
+		portSettings.GetTxBufferUserHandler = &GetTxBufferHandler;
+		StartCommunication(port, portSettings, 1);
 
 		while (CheckCommunicationRunning() == WAIT_TIMEOUT) {
 			Message_t newMessage = { 0 };

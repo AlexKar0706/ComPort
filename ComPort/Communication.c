@@ -17,11 +17,27 @@ typedef struct {
 	size_t messagesInQueue;
 } MessageQueue_t;
 
+typedef struct {
+	HANDLE portHandler;
+	PortSettings_t settings;
+	BOOL txThreadRunning;
+	BOOL rxThreadRunning;
+} PortThreadParameters_t;
+
+/* Private threads declaration */
+
+static DWORD WINAPI PortReadingLoopThread(LPVOID threadParameters);
+static DWORD WINAPI PortWrittingLoopThread(LPVOID threadParameters);
+
+/* Private global declaration */
+
 static Message_t errorMessage = { 0 };
 static MessageQueue_t messageQueue = { 0 };
 static HANDLE portThreads[2] = { 0 };
 static HANDLE portMessageMutex = NULL;
 static PortThreadParameters_t portParameter = { 0 };
+
+/* Functions */
 
 static void MessageQueueInit(void) 
 {
@@ -69,7 +85,7 @@ static void SavePortError(const char* context)
 		NULL, error_code, MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US),
 		buffer, sizeof(buffer), NULL);
 	if (size == 0) { buffer[0] = 0; }
-	snprintf(errorMessage.buffer, sizeof(errorMessage.buffer), "%s: %s\n", context, buffer);
+	snprintf((char* )errorMessage.buffer, sizeof(errorMessage.buffer), "%s: %s\n", context, buffer);
 	errorMessage.length = strlen(context) + strlen(buffer);
 }
 
@@ -168,7 +184,7 @@ static SSIZE_T ReadPort(HANDLE port, uint8_t* buffer, size_t size)
 
 // Prepare threads for communication, and then activate them
 // Wait for the threads complition for the specified provided time
-void StartCommunication(HANDLE port, DWORD dwWaitMilliseconds)
+void StartCommunication(HANDLE port, PortSettings_t portSettings, DWORD dwWaitMilliseconds)
 {
 	memset(portThreads, 0, sizeof(portThreads));
 	memset(&portParameter, 0, sizeof(PortThreadParameters_t));
@@ -176,7 +192,7 @@ void StartCommunication(HANDLE port, DWORD dwWaitMilliseconds)
 
 	portParameter.portHandler = port;
 	portParameter.rxThreadRunning = portParameter.txThreadRunning = TRUE;
-	portParameter.settings.showTimeStamp = TRUE;
+	portParameter.settings = portSettings;
 
 	portThreads[0] = CreateThread(NULL, 0, PortWrittingLoopThread, &portParameter, 0, NULL);
 	assert(portThreads[0] != NULL);
@@ -271,7 +287,7 @@ static void GetTimestampString(char* pString, size_t stringSize)
 	strncat_s(pString, stringSize, tempString, sizeof(tempString));
 }
 
-DWORD WINAPI PortReadingLoopThread(LPVOID threadParameters)
+static DWORD WINAPI PortReadingLoopThread(LPVOID threadParameters)
 {
 	PortThreadParameters_t* pPortParameters = (PortThreadParameters_t*)threadParameters;
 
@@ -333,29 +349,29 @@ DWORD WINAPI PortReadingLoopThread(LPVOID threadParameters)
 	return 0;
 }
 
-DWORD WINAPI PortWrittingLoopThread(LPVOID threadParameters)
+static DWORD WINAPI PortWrittingLoopThread(LPVOID threadParameters)
 {
 	PortThreadParameters_t* pPortParameters = (PortThreadParameters_t*)threadParameters;
-
 	assert(pPortParameters != NULL);
 
+	DWORD(*GetTxBuffer)(uint8_t * pTxBuffer, size_t txBufferSize) = pPortParameters->settings.GetTxBufferUserHandler;
 	while (1) {
 
-		// TODO: Thread should be terminated at any time, if read thread detect problem. Currently it is blocked by fgets
-		// TODO: Think, how to abstract away console fgets function
-
 		uint8_t txBuffer[PORT_BUFFER_DATA_SIZE] = { 0 };
+		DWORD getBufferStatus = 0;
 
-		if (fgets(&txBuffer[0], sizeof(txBuffer), stdin) == NULL) continue;
+		while (1) {
+			getBufferStatus = GetTxBuffer(&txBuffer[0], sizeof(txBuffer));
 
-		if (!pPortParameters->rxThreadRunning) break;
+			if (!pPortParameters->rxThreadRunning) break;
+
+			if (getBufferStatus == GET_TX_BUFFER_TRANSMIT || getBufferStatus == GET_TX_BUFFER_TERMINATE) break;
+		}
+
+		if (!pPortParameters->rxThreadRunning || getBufferStatus == GET_TX_BUFFER_TERMINATE) break;
 
 		size_t txMessageLength = strlen(txBuffer);
 		assert(txMessageLength <= sizeof(txBuffer));
-
-		// Check for the command to close COM port communication
-		// TODO: now it is not working with message queue implementation 
-		//if (strncmp(&txBuffer[0], "-close", 6) == 0) break;
 
 		// TODO: Add support for the different message formats (CR, LF, CRLF)
 
