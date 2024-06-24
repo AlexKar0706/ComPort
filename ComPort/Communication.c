@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdint.h>
+#include <stdbool.h>
 #include <string.h>
 #include <assert.h>
 #include <windows.h>
@@ -7,7 +8,59 @@
 
 #pragma comment (lib, "OneCore.lib")
 
-static void PrintError(const char* context)
+#define MESSAGE_QUEUE_SIZE	(10) // Maximum available size of queue
+
+typedef struct {
+	Message_t messages[MESSAGE_QUEUE_SIZE];
+	size_t head;
+	size_t tail;
+	size_t messagesInQueue;
+} MessageQueue_t;
+
+static Message_t errorMessage = { 0 };
+static MessageQueue_t messageQueue = { 0 };
+static HANDLE portThreads[2] = { 0 };
+static HANDLE portMessageMutex = NULL;
+static PortThreadParameters_t portParameter = { 0 };
+
+static void MessageQueueInit(void) 
+{
+	memset(&messageQueue, 0, sizeof(messageQueue));
+
+	portMessageMutex = NULL;
+	portMessageMutex = CreateMutex(NULL, FALSE, NULL);
+	assert(portMessageMutex != NULL);
+}
+
+static bool MessageQueuePush(Message_t message) 
+{
+	if (messageQueue.messagesInQueue == MESSAGE_QUEUE_SIZE) return false;
+
+	messageQueue.messages[messageQueue.head] = message;
+
+	if (messageQueue.head < (MESSAGE_QUEUE_SIZE - 1)) messageQueue.head++;
+	else messageQueue.head = 0;
+
+	messageQueue.messagesInQueue++;
+
+	return true;
+}
+
+static bool MessageQueuePop(Message_t* pMessage)
+{
+	if (messageQueue.messagesInQueue == 0) return false;
+
+	*pMessage = messageQueue.messages[messageQueue.tail];
+
+	if (messageQueue.tail < (MESSAGE_QUEUE_SIZE - 1)) messageQueue.tail++;
+	else messageQueue.tail = 0;
+
+	messageQueue.messagesInQueue--;
+
+	return true;
+}
+
+static void SavePortError(const char* context)
 {
 	DWORD error_code = GetLastError();
 	char buffer[256];
@@ -16,7 +69,8 @@ static void PrintError(const char* context)
 		NULL, error_code, MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US),
 		buffer, sizeof(buffer), NULL);
 	if (size == 0) { buffer[0] = 0; }
-	fprintf(stderr, "%s: %s\n", context, buffer);
+	snprintf(errorMessage.buffer, sizeof(errorMessage.buffer), "%s: %s\n", context, buffer);
+	errorMessage.length = strlen(context) + strlen(buffer);
 }
 
 // Opens the specified serial port, configures its timeouts, and sets its
@@ -27,7 +81,7 @@ HANDLE OpenSerialPort(const char* device, COMMTIMEOUTS* pTimeouts, DCB* pState)
 		OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
 	if (port == INVALID_HANDLE_VALUE)
 	{
-		PrintError(device);
+		SavePortError(device);
 		return INVALID_HANDLE_VALUE;
 	}
 
@@ -35,7 +89,7 @@ HANDLE OpenSerialPort(const char* device, COMMTIMEOUTS* pTimeouts, DCB* pState)
 	BOOL success = FlushFileBuffers(port);
 	if (!success)
 	{
-		PrintError("Failed to flush serial port");
+		SavePortError("Failed to flush serial port");
 		CloseHandle(port);
 		return INVALID_HANDLE_VALUE;
 	}
@@ -52,7 +106,7 @@ HANDLE OpenSerialPort(const char* device, COMMTIMEOUTS* pTimeouts, DCB* pState)
 	success = SetCommTimeouts(port, pTimeouts);
 	if (!success)
 	{
-		PrintError("Failed to set serial timeouts");
+		SavePortError("Failed to set serial timeouts");
 		CloseHandle(port);
 		return INVALID_HANDLE_VALUE;
 	}
@@ -69,7 +123,7 @@ HANDLE OpenSerialPort(const char* device, COMMTIMEOUTS* pTimeouts, DCB* pState)
 	success = SetCommState(port, pState);
 	if (!success)
 	{
-		PrintError("Failed to set serial settings");
+		SavePortError("Failed to set serial settings");
 		CloseHandle(port);
 		return INVALID_HANDLE_VALUE;
 	}
@@ -84,12 +138,12 @@ static int WritePort(HANDLE port, uint8_t* buffer, size_t size)
 	BOOL success = WriteFile(port, buffer, (DWORD)size, &written, NULL);
 	if (!success)
 	{
-		PrintError("Failed to write to port");
+		SavePortError("Failed to write to port");
 		return -1;
 	}
 	if (written != size)
 	{
-		PrintError("Failed to write all bytes to port");
+		SavePortError("Failed to write all bytes to port");
 		return -1;
 	}
 	return 0;
@@ -106,95 +160,115 @@ static SSIZE_T ReadPort(HANDLE port, uint8_t* buffer, size_t size)
 	BOOL success = ReadFile(port, buffer, (DWORD)size, &received, NULL);
 	if (!success)
 	{
-		PrintError("Failed to read from port");
+		SavePortError("Failed to read from port");
 		return -1;
 	}
 	return received;
 }
 
-void WaitAvailablePort(ULONG* availablePorts, ULONG portsMax, ULONG* availablePortsNum)
+// Prepare threads for communication, and then activate them
+// Wait for the threads complition for the specified provided time
+void StartCommunication(HANDLE port, DWORD dwWaitMilliseconds)
 {
-	assert(availablePorts != NULL && availablePortsNum != NULL);
+	memset(portThreads, 0, sizeof(portThreads));
+	memset(&portParameter, 0, sizeof(PortThreadParameters_t));
+	MessageQueueInit();
 
-	GetCommPorts(availablePorts, portsMax, availablePortsNum);
+	portParameter.portHandler = port;
+	portParameter.rxThreadRunning = portParameter.txThreadRunning = TRUE;
+	portParameter.settings.showTimeStamp = TRUE;
 
-	uint8_t animation = 0;
-	while (*availablePortsNum == 0) {
+	portThreads[0] = CreateThread(NULL, 0, PortWrittingLoopThread, &portParameter, 0, NULL);
+	assert(portThreads[0] != NULL);
 
-		if (animation == 0) printf("Waiting for the COM ports");
-		else if (animation >= 1 && animation <= 3) printf(".");
+	portThreads[1] = CreateThread(NULL, 0, PortReadingLoopThread, &portParameter, 0, NULL);
+	assert(portThreads[1] != NULL);
 
-		GetCommPorts(availablePorts, portsMax, availablePortsNum);
-
-		Sleep(500);
-		animation++;
-		if (animation > 3) {
-			animation = 0;
-			system("cls");
-		}
-
-	}
-
-	system("cls");
+	WaitForMultipleObjects(sizeof(portThreads) / sizeof(portThreads[0]), portThreads, TRUE, dwWaitMilliseconds);
 }
 
-// Print available ports to the console
-void PrintPorts(ULONG* availablePorts, ULONG availablePortsNum)
+// Returns windows-like stile communication objects status
+DWORD CheckCommunicationRunning(void)
 {
-	assert(availablePorts != NULL);
-
-	printf("Available ports:\n");
-
-	for (ULONG portNum = 0; portNum < availablePortsNum; portNum++) {
-
-		printf("COM%lu\n", availablePorts[portNum]);
-
-	}
-
-	printf("\n");
+	return WaitForMultipleObjects(sizeof(portThreads) / sizeof(portThreads[0]), portThreads, TRUE, 0);
 }
 
-void RequestNewDevice(char* deviceName, size_t nameSizeMax)
+// Get error message
+// Returns TRUE, if message loaded successfully
+// Returns FALSE, if no message provided
+BOOL GetPortErrorMessage(Message_t* pMessage)
 {
+	if (errorMessage.length == 0) return FALSE;
 
-	// TODO: Accept only available ports, dismiss other choices
+	*pMessage = errorMessage;
+	memset(&errorMessage, 0, sizeof(errorMessage));
 
-	// TODO: Make ports select by keys instead of typying it's name
-
-	// TODO: Update available devices during request in case of removing device
-
-	while (1) {
-
-		char InputBuffer[256] = "\\\\.\\";
-		printf("Type device name: ");
-
-		if (fgets(&InputBuffer[4], sizeof(InputBuffer) - 4, stdin) == NULL) continue;
-
-
-		if ((strncmp("COM", &InputBuffer[4], 3) != 0) ||
-			(!isdigit(InputBuffer[7])) ||
-			(InputBuffer[8] != '\n' && !isdigit(InputBuffer[8])) ||
-			(InputBuffer[9] != '\n' && isdigit(InputBuffer[8]))) {
-
-			printf("Wrong device name\n");
-			continue;
-
-		}
-
-		size_t digitNum = 1;
-		if (isdigit(InputBuffer[8])) digitNum = 2;
-		InputBuffer[7 + digitNum] = '\0';
-		strncpy_s(deviceName, nameSizeMax, InputBuffer, (8 + digitNum));
-		return;
-	}
+	return TRUE;
 }
 
-static void PrintTimestamp(void)
+// Get message from the queue
+// Returns TRUE, if message loaded successfully
+// Returns FALSE, if message queue was empty
+BOOL GetPortMessage(Message_t* pMessage)
 {
+	bool popStatus;
+
+	WaitForSingleObject(portMessageMutex, INFINITE);
+	popStatus = MessageQueuePop(pMessage);
+	assert(ReleaseMutex(portMessageMutex) != 0);
+
+	if (popStatus) return TRUE;
+	return FALSE;
+}
+
+// Put new message to the queue
+// By bool parameter, function will block itself, until queue is available to put new parameter
+// Returns TRUE, if message reached message queue
+// Returns FALSE, if message could not reach message queue
+BOOL PutPortMessage(Message_t message, BOOL fullQueueBlock) 
+{
+	bool pushStatus;
+
+	do {
+
+		WaitForSingleObject(portMessageMutex, INFINITE);
+		pushStatus = MessageQueuePush(message);
+		assert(ReleaseMutex(portMessageMutex) != 0);
+
+		// Sleep for 10ms before next attempt
+		if ((pushStatus == false) && (fullQueueBlock == TRUE)) Sleep(10);
+
+	} while ((pushStatus == false) && (fullQueueBlock == TRUE));
+
+	if (pushStatus) return TRUE;
+	return FALSE;
+}
+
+// Finish on-going communication by closing every thread
+// Function returns zero, if communicatin finished successfully
+// Function returns non-zero, if communication is already closed, or something went wrong
+DWORD CloseCommunication(HANDLE port)
+{
+	if (CheckCommunicationRunning() != WAIT_OBJECT_0) return (1);
+
+	CloseHandle(portThreads[0]);
+	CloseHandle(portThreads[1]);
+	CloseHandle(port);
+	CloseHandle(portMessageMutex);
+
+	return (0);
+}
+
+static void GetTimestampString(char* pString, size_t stringSize)
+{
+	char tempString[16] = "";
 	SYSTEMTIME time = { 0 };
-	GetLocalTime(&time);
 
-	printf("[%02d:%02d:%02d.%03d]", time.wHour, time.wMinute, time.wSecond, time.wMilliseconds);
+	assert(stringSize >= 16);
+
+	GetLocalTime(&time);
+	snprintf(tempString, sizeof(tempString), "[%02d:%02d:%02d.%03d]", time.wHour, time.wMinute, time.wSecond, time.wMilliseconds);
+	strncat_s(pString, stringSize, tempString, sizeof(tempString));
 }
 
 DWORD WINAPI PortReadingLoopThread(LPVOID threadParameters)
@@ -205,7 +279,7 @@ DWORD WINAPI PortReadingLoopThread(LPVOID threadParameters)
 
 	while (1) {
 
-		uint8_t rxBuffer[1024] = { 0 };
+		uint8_t rxBuffer[PORT_BUFFER_DATA_SIZE] = { 0 };
 		size_t rxMessageLength = 0;
 		SSIZE_T neededBytesToRead = 0;
 
@@ -228,28 +302,33 @@ DWORD WINAPI PortReadingLoopThread(LPVOID threadParameters)
 		if (pPortParameters->txThreadRunning == FALSE) break;
 
 		// Check for the error
-		if (neededBytesToRead == -1) {
-			printf("Port closing\n");
-			break;
+		if (neededBytesToRead == -1) break;
+
+		char metadataBuffer[PORT_BUFFER_METADATA_SIZE] = { 0 };
+		if (pPortParameters->settings.showTimeStamp) GetTimestampString(&metadataBuffer[0], sizeof(metadataBuffer));
+		strncat_s(metadataBuffer, sizeof(metadataBuffer), "[RX] ", 6);
+
+		Message_t newMessage = { 0 };
+		size_t messageLength = 0;
+
+		for (size_t i = 0; i < PORT_BUFFER_METADATA_SIZE; i++) {
+			if (metadataBuffer[i] == '\0') break;
+			newMessage.buffer[messageLength++] = metadataBuffer[i];
 		}
 
-
-		WaitForSingleObject(pPortParameters->terminalWriteMutex, INFINITE);
-
-		if (pPortParameters->settings.showTimeStamp) PrintTimestamp();
-		printf("[RX] ");
 		for (size_t rxByteCount = 0; rxByteCount < rxMessageLength; rxByteCount++) {
-			printf("%c", rxBuffer[rxByteCount]);
+			newMessage.buffer[messageLength++] = rxBuffer[rxByteCount];
 		}
 
-		if (!ReleaseMutex(pPortParameters->terminalWriteMutex)) break;
+		newMessage.length = messageLength;
+
+		PutPortMessage(newMessage, TRUE);
 
 		// Safety for checking overflow
 		if (neededBytesToRead > 0) continue;
 	}
 
 	pPortParameters->rxThreadRunning = FALSE;
-	ReleaseMutex(pPortParameters->terminalWriteMutex);
 
 	return 0;
 }
@@ -262,10 +341,10 @@ DWORD WINAPI PortWrittingLoopThread(LPVOID threadParameters)
 
 	while (1) {
 
-		// TODO: Decide, what to do with buffer size
 		// TODO: Thread should be terminated at any time, if read thread detect problem. Currently it is blocked by fgets
+		// TODO: Think, how to abstract away console fgets function
 
-		uint8_t txBuffer[1024] = { 0 };
+		uint8_t txBuffer[PORT_BUFFER_DATA_SIZE] = { 0 };
 
 		if (fgets(&txBuffer[0], sizeof(txBuffer), stdin) == NULL) continue;
 
@@ -275,30 +354,37 @@ DWORD WINAPI PortWrittingLoopThread(LPVOID threadParameters)
 		assert(txMessageLength <= sizeof(txBuffer));
 
 		// Check for the command to close COM port communication
-		if (strncmp(&txBuffer[0], "-close", 6) == 0) {
-			printf("Port closing\n");
-			break;
-		}
+		// TODO: now it is not working with message queue implementation 
+		//if (strncmp(&txBuffer[0], "-close", 6) == 0) break;
 
 		// TODO: Add support for the different message formats (CR, LF, CRLF)
 
-		WaitForSingleObject(pPortParameters->terminalWriteMutex, INFINITE);
+		if (WritePort(pPortParameters->portHandler, &txBuffer[0], txMessageLength) != 0) break;
 
-		if (pPortParameters->settings.showTimeStamp) PrintTimestamp();
-		printf("[TX] ");
-		for (size_t i = 0; i < txMessageLength; i++) printf("%c", txBuffer[i]);
-		if (WritePort(pPortParameters->portHandler, &txBuffer[0], txMessageLength) != 0) {
-			printf("Port closing\n");
-			break;
+		char metadataBuffer[PORT_BUFFER_METADATA_SIZE] = { 0 };
+		if (pPortParameters->settings.showTimeStamp) GetTimestampString(&metadataBuffer[0], sizeof(metadataBuffer));
+		strncat_s(metadataBuffer, sizeof(metadataBuffer), "[TX] ", 6);
+
+		Message_t newMessage = { 0 };
+		size_t messageLength = 0;
+
+		for (size_t i = 0; i < PORT_BUFFER_METADATA_SIZE; i++) {
+			if (metadataBuffer[i] == '\0') break;
+			newMessage.buffer[messageLength++] = metadataBuffer[i];
 		}
 
-		if (!ReleaseMutex(pPortParameters->terminalWriteMutex)) break;
+		for (size_t txByteCount = 0; txByteCount < txMessageLength; txByteCount++) {
+			newMessage.buffer[messageLength++] = txBuffer[txByteCount];
+		}
+
+		newMessage.length = messageLength;
+
+		PutPortMessage(newMessage, TRUE);
 
 		continue;
 	}
 
 	pPortParameters->txThreadRunning = FALSE;
-	ReleaseMutex(pPortParameters->terminalWriteMutex);
 
 	return 0;
 }
