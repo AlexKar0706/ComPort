@@ -128,7 +128,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="Communication.c" />
-    <ClCompile Include="ComPort.c" />
+    <ClCompile Include="ComPort_Console.c" />
   </ItemGroup>
   <ItemGroup>
     <None Include="..\.gitignore" />
