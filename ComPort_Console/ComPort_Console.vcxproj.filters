@@ -13,16 +13,13 @@
       <UniqueIdentifier>{67DA6AB6-F800-4c08-8B7A-83BB121AAD01}</UniqueIdentifier>
       <Extensions>rc;ico;cur;bmp;dlg;rc2;rct;bin;rgs;gif;jpg;jpeg;jpe;resx;tiff;tif;png;wav;mfcribbon-ms</Extensions>
     </Filter>
-    <Filter Include="Source Files\Console Files">
-      <UniqueIdentifier>{c33cda5d-b9fb-4713-9bf0-24fc5cc53775}</UniqueIdentifier>
-    </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="Communication.c">
+    <ClCompile Include="ComPort_Console.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="ComPort_Console.c">
-      <Filter>Source Files\Console Files</Filter>
+    <ClCompile Include="..\Common\Communication.c">
+      <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
@@ -30,7 +27,7 @@
     <None Include="..\README.md" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="Communication.h">
+    <ClInclude Include="..\Common\Communication.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>
