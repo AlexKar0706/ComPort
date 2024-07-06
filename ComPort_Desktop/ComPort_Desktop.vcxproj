@@ -133,7 +133,7 @@
     <ClInclude Include="targetver.h" />
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="ComPort_Desktop.cpp" />
+    <ClCompile Include="ComPort_Desktop.c" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="ComPort_Desktop.rc" />
